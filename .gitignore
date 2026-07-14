@@ -1,3 +1,16 @@
-frontier-1-node-single-HPL-run/*.csv
-frontier-16-node-single-HPL-run/*.csv
-test/
+# Scratch conversion output (large; regenerated each run)
+.bench-scratch/
+.venv/
+
+# Built container images
+container/*.sif
+container/*.tar
+
+# Generated benchmark logs (keep results tables/chart trackable)
+results/logs/
+
+# Python caches
+__pycache__/
+*.pyc
+
+copilot/

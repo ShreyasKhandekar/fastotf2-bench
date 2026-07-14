@@ -1,2 +1,0 @@
-frontier-1-node-single-HPL-run.tar.gz filter=lfs diff=lfs merge=lfs -text
-*.part_* filter=lfs diff=lfs merge=lfs -text

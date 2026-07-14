@@ -1,64 +1,99 @@
 # fast-OTF2-bench
 
-This project benchmarks `fastotf2`, a tool used to convert traces from OTF2 to CSV for quick loading into Python workflows.
-Once converted to CSVs, Python notebooks can load them in seconds rather than minutes at a time, even for large traces.
+Benchmarks the **Chapel-powered [`fastotf2`](https://github.com/hpc-ai-adv-dev/fastotf2)
+converter** against **Python** and **C** converters, measuring the wall-clock time each
+takes to convert OTF2 traces into tabular output (CSV / Parquet).
 
-## Project Files
+Everything runs from **one Jupyter notebook**: [`fastotf2-benchmark.ipynb`](fastotf2-benchmark.ipynb).
+Choose *Run All* and it builds the container (once), submits a single-node SLURM job that
+times every converter, and renders a comparison table + chart.
 
-|File|Description|
-|-|-|
-|`convert.py`|Performs conversion to CSV using OTF2's own Python API.|
-|`otf2csv.c`|Performs conversion to CSV using the C library for OTF2.|
-|`fastotf2-convert-and-load-bench.ipynb`|This notebook runs `fastotf2` on the traces and loads them into a structured API for representing exascale traces, managing `Ensemble`s of `Run`s which each contain `Node`s, the `Rank`s that run on them, and their metrics from the trace. This notebook benchmarks the speedup `fastotf2` provides over reading the data using the `otf2` module directly or using C to perform the conversion instead.|
-|`read-and-convert-bench.sbatch`|This file runs `fastotf2`, `convert.py`, and `otf2csv` and logs their outputs and timings. Each converter logs its trace loading time, the time it takes to write the data back out, and the total conversion time, so the two APIs can be directly compared.|
-|`frontier-1-node-single-HPL-run.tar.gz`|A trace from a single HPL run on a single node on the Frontier supercomputer at ORNL.|
-|`frontier-16-node-single-HPL-run.tar.gz.part*`|A trace from a single HPL run on 16 nodes on the Frontier supercomputer at ORNL.|
+## What is compared
 
-## Build the Tools
+| Tool | CSV | Parquet | How it runs |
+|------|-----|---------|-------------|
+| **Chapel** (`fastotf2`) | ✓ | ✓ | the upstream converter, using all node cores |
+| **Python** (`otf2` + `pyarrow`) | ✓ | ✓ | pure-Python reader, single-threaded |
+| **C** (OTF2 C library) | ✓ | — | `fprintf` CSV writer, single-threaded |
 
-First, clone the repo and its submodule.
-```bash
-$ git clone --recursive https://github.com/adam-mcdaniel/fast-OTF2-bench
+C emits CSV only: Parquet output in C requires the Apache Arrow C++/GLib toolchain, which
+is a heavy dependency and out of scope for the baseline. The table shows **N/A** there.
+
+## Design: one portable container
+
+Instead of the old approach (a `fast-OTF2` git submodule plus manual installs of the OTF2
+C API and the `otf2` Python module), all three converters live inside **one Apptainer
+image** built `FROM` the published `fastotf2` converter container. That base already
+provides the Chapel converter, the OTF2 3.1.1 C library, and Apache Arrow; the bench image
+adds the Python OTF2 stack and compiles the C converter against the same OTF2.
+
+The only host requirements are **Apptainer** and **SLURM**. As long as the trace paths in
+[`bench.config.sh`](bench.config.sh) are valid, the workflow runs unchanged on any machine.
+
+## Repository layout
+
+```
+bench.config.sh                # single source of truth: traces, image, paths, SLURM
+container/
+  Containerfile.bench          # FROM fastotf2 image; adds Python stack + compiled C
+  build-bench-image.sh         # podman build -> apptainer .sif (idempotent)
+converters/
+  python/otf2_convert.py       # OTF2 -> CSV/Parquet via the otf2 reader + pyarrow
+  c/otf2csv.c, Makefile        # OTF2 -> CSV via the OTF2 C library
+benchmark/
+  benchmark.sh                 # core timing loop (tool x format x trace x repeat)
+  run_benchmark.sbatch         # SLURM wrapper: 1 exclusive node -> results/results.csv
+results/                       # results.csv, rendered table, chart (generated)
+fastotf2-benchmark.ipynb       # ONE-CLICK: build -> submit -> table + chart
+copilot/new-bench-plan.md      # rearchitecture plan
 ```
 
-#### Build the `fastotf2` Converter
-Go to the fast-OTF2 directory and build with the makefile. Make sure you have [Chapel](https://chapel-lang.org/) installed!
-```bash
-$ cd fast-OTF2 && make
-```
-
-#### Build the C Converter
-To build the C converter used for the results, install the [OTF2 bindings](https://scorepci.pages.jsc.fz-juelich.de/otf2-pipelines/doc.r4735/installationfile.html) and run the following:
-```bash
-$ gcc -O3 -o otf2csv ./otf2csv.c $(otf2-config --cflags) $(otf2-config --libs) $(otf2-config --ldflags)
-```
-
-## Run the Benchmarks
-
-> [!WARNING]
-> The scripts here all use an environment setup on the Frontier supercomputer. You will need to substitute the `LD_LIBRARY_PATH` configuration for your own machine -- it needs to contain the library files for your OTF2 installation.
-
-#### Untar the Traces
-Join all the trace parts together and untar them to get the trace files.
-```bash
-$ # Join all the trace parts
-$ cat frontier-16-node-single-HPL-run.tar.gz.part_* > frontier-16-node-single-HPL-run.tar.gz
-$ # Untar
-$ tar -xvf frontier-1-node-single-HPL-run.tar.gz
-$ tar -xvf frontier-16-node-single-HPL-run.tar.gz
-```
-
-Then, you can run the following benchmarks:
-#### Read and Convert
+## Quick start
 
 ```bash
-$ # Bench the reading/conversion speeds
-$ sbatch read-and-convert-bench.sbatch
+# From the repo root, open and Run All:
+jupyter lab fastotf2-benchmark.ipynb
 ```
 
-The outputs will be in SLURM logs: `slurm-%j.out` and `slurm-%j.err`.
+Or run the pieces directly:
 
-#### Convert and Load into Workflow
+```bash
+# 1. Build the benchmark container (once)
+bash container/build-bench-image.sh
 
-Open and run the `fastotf2-convert-and-load-bench.ipynb` notebook!
-This will run the `otf2csv` and `fastotf2` converters, and then load their data into a structured API that allows users to process the data in their traces and convert them into [Hatchet](https://hatchet.readthedocs.io/en/latest/) and [Thicket](https://thicket.readthedocs.io/en/latest/) profiles.
+# 2. Run the benchmark on one exclusive node
+sbatch --account=<acct> --partition=<part> benchmark/run_benchmark.sbatch
+
+# 3. Inspect results
+column -s, -t results/results.csv
+```
+
+## Configuration
+
+Edit [`bench.config.sh`](bench.config.sh) (or override via environment variables):
+
+- `BENCH_TRACES` — `label|/path/to/trace-dir` entries. Defaults to the Frontier
+  `2-node` (~699 MB) and `32-node` (~33 GB) single-HPL runs on the shared filesystem.
+- `BENCH_COMBOS` — which `tool|format` pairs to run.
+- `BENCH_REPEATS` — timed repeats per combination (averaged; default 1).
+- `BENCH_SIF`, `BENCH_BASE_IMAGE` — container image locations.
+- `BENCH_OUTPUT_ROOT`, `BENCH_RESULTS_DIR` — scratch and results directories.
+- `BENCH_SLURM_ACCOUNT`, `BENCH_SLURM_PARTITION`, `BENCH_SLURM_TIME` — SLURM settings.
+
+## Methodology
+
+Every conversion runs inside `container/fastotf2-bench.sif` on **one exclusive node** so
+timings are comparable and uncontended. Wall-clock time is measured around each converter
+invocation; output goes to scratch and is deleted between runs. Chapel is given all node
+cores (`CHPL_RT_NUM_THREADS_PER_LOCALE`) — its data-parallel advantage — while Python and C
+run single-threaded, as shipped. Raw per-run data lands in `results/results.csv`.
+
+## Converter output schema
+
+All converters follow the `fastotf2` schema:
+
+- `<Group>_<Thread>_callgraph.{csv,parquet}` — `Thread, Group, Depth, Name, Start Time,
+  End Time, Duration`
+- `<Group>_metrics.{csv,parquet}` — `Group, Metric Name, Time, Value`
+
+CSV times are in seconds; Parquet times are in nanoseconds (matching the Chapel converter).

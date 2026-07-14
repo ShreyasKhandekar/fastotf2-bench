@@ -1,0 +1,8 @@
+trace,tool,format,repeat,seconds,output_bytes,status
+2-node,chapel,CSV,1,14.091,2282757204,0
+2-node,chapel,PARQUET,1,7.666,396252052,0
+2-node,python,CSV,1,263.076,1825186856,0
+2-node,python,PARQUET,1,277.631,322859141,0
+2-node,c,CSV,1,25.644,1823729530,0
+32-node,chapel,CSV,1,64.757,104446185180,0
+32-node,chapel,PARQUET,1,56.369,17451167687,0

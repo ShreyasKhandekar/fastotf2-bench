@@ -1,0 +1,48 @@
+# Containerfile.bench -- the fastotf2-bench comparison image.
+#
+# Derived FROM the published fastotf2 converter image, which already provides:
+#   * the Chapel FastOTF2Converter binary (single-locale, runs directly),
+#   * the OTF2 3.1.1 C library + headers at /opt/otf2,
+#   * Apache Arrow at /opt/arrow.
+#
+# This image adds the other two converters so a single .sif runs all three with
+# identical OTF2 versions:
+#   * Python: the pure-Python `otf2` reader + pandas/pyarrow, plus our converter,
+#   * C: our OTF2 -> CSV converter, compiled here against /opt/otf2.
+#
+# Build via container/build-bench-image.sh (podman build -> apptainer .sif).
+
+ARG BASE_IMAGE=ghcr.io/hpc-ai-adv-dev/fastotf2/fastotf2-converter:latest
+FROM ${BASE_IMAGE}
+
+# OTF2 tooling lives here in the base image.
+ENV PATH=/opt/otf2/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/otf2/lib:/opt/arrow/lib:$LD_LIBRARY_PATH
+
+# Build tools for the C converter + Python/pip for the Python converter.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
+        make \
+        python3 \
+        python3-pip \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python converter dependencies. The `otf2` package is the pure-Python reader.
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        otf2 \
+        pandas \
+        pyarrow
+
+# Install the converter assets under /opt/bench.
+WORKDIR /opt/bench
+COPY converters/c/otf2csv.c converters/c/Makefile /opt/bench/c/
+COPY converters/python/otf2_convert.py /opt/bench/otf2_convert.py
+
+# Compile the C converter against the base image's OTF2 install.
+RUN make -C /opt/bench/c OTF2_CONFIG=/opt/otf2/bin/otf2-config \
+    && cp /opt/bench/c/otf2csv /opt/bench/otf2csv \
+    && /opt/bench/otf2csv 2>/dev/null; true
+
+# Keep the base image's entrypoint (runs the Chapel converter for `apptainer run`).
+# The Python and C converters are invoked with `apptainer exec`.
