@@ -1,6 +1,8 @@
 # Scratch conversion output (large; regenerated each run)
 .bench-scratch/
 .venv/
+.venv3.11/
+
 
 # Built container images
 container/*.sif
@@ -15,5 +17,8 @@ out/**/run_logs/
 # Python caches
 __pycache__/
 *.pyc
+
+# Local secrets (SLURM account / mail user) — never commit
+local_secrets.py
 
 copilot/
