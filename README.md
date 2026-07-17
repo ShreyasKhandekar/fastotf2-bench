@@ -27,26 +27,31 @@ image** built `FROM` the published `fastotf2` converter container. That base alr
 provides the Chapel converter, the OTF2 3.1.1 C library, and Apache Arrow; the bench image
 adds the Python OTF2 stack and compiles the C converter against the same OTF2.
 
-The only host requirements are **Apptainer** and **SLURM**. As long as the trace paths in
-[`bench.config.sh`](bench.config.sh) are valid, the workflow runs unchanged on any machine.
+The only host requirements are **Apptainer** and **SLURM**. As long as the trace paths you
+set in the notebook are valid, the workflow runs unchanged on any machine.
 
 ## Repository layout
 
 ```
-bench.config.sh                # single source of truth: traces, image, paths, SLURM
+fastotf2-benchmark.ipynb       # THE control surface: all config + one-click run + analysis
 container/
   Containerfile.bench          # FROM fastotf2 image; adds Python stack + compiled C
-  build-bench-image.sh         # podman build -> apptainer .sif (idempotent)
+  build-bench-image.sh         # podman build -> apptainer .sif (env-driven, idempotent)
 converters/
   python/otf2_convert.py       # OTF2 -> CSV/Parquet via the otf2 reader + pyarrow
   c/otf2csv.c, Makefile        # OTF2 -> CSV via the OTF2 C library
 benchmark/
-  benchmark.sh                 # core timing loop (tool x format x trace x repeat)
-  run_benchmark.sbatch         # SLURM wrapper: 1 exclusive node -> results/results.csv
-results/                       # results.csv, rendered table, chart (generated)
-fastotf2-benchmark.ipynb       # ONE-CLICK: build -> submit -> table + chart
+  run_one.sh                   # env-driven engine: runs ONE conversion, writes one timing CSV
+out/run_<timestamp>/           # one self-contained folder per run (created by the notebook)
+  config.json, manifest.csv, results.csv, timings/, slurm_logs/, run_logs/, scratch/, plots/
 copilot/new-bench-plan.md      # rearchitecture plan
 ```
+
+There is **no config file** — all configuration lives in the notebook's config cell. Each
+`(trace, tool, format, repeat)` is submitted as its **own exclusive single-node SLURM job**
+(via a generated per-job `run_logs/<tag>.sbatch`), so conversions run **in parallel** on
+separate nodes — the slow Python CSV and Parquet runs proceed simultaneously. Every job
+writes its own row to `timings/<tag>.csv`; the notebook merges them into `results.csv`.
 
 ## Quick start
 
@@ -55,38 +60,39 @@ copilot/new-bench-plan.md      # rearchitecture plan
 jupyter lab fastotf2-benchmark.ipynb
 ```
 
-Or run the pieces directly:
+Editing the **§0 config cell** is all you normally touch: traces, tool/format combos,
+repeats, image path, and SLURM account/partition. Each run of that cell creates a fresh
+`out/run_<timestamp>/` folder, so runs never clobber each other.
+
+### Runs, logs, and re-analysis
+
+- **New run:** Run All. A new `out/run_<timestamp>/` is created and submitted to SLURM.
+- **Re-analyse a previous run** (no new data): restart the kernel, run the §0 imports, then
+  set `ANALYZE_RUN = "run_YYYYMMDD_HHMMSS"` in §4 and run the analysis cells.
+- **Resubmit while another run is going:** launch a fresh run any time — the running SLURM
+  job is independent and writes to its own folder.
+- **Preview without submitting:** set `DRY_RUN = True` in §0.
+
+### Testing a rebuilt image without disturbing a running job
+
+Build to a separate `.sif` and point the notebook's `IMAGE` at it:
 
 ```bash
-# 1. Build the benchmark container (once)
-bash container/build-bench-image.sh
-
-# 2. Run the benchmark on one exclusive node
-sbatch --account=<acct> --partition=<part> benchmark/run_benchmark.sbatch
-
-# 3. Inspect results
-column -s, -t results/results.csv
+BENCH_SIF=container/fastotf2-bench-next.sif \
+BENCH_IMAGE_TAG=localhost/fastotf2-bench:next \
+  bash container/build-bench-image.sh --force
 ```
-
-## Configuration
-
-Edit [`bench.config.sh`](bench.config.sh) (or override via environment variables):
-
-- `BENCH_TRACES` — `label|/path/to/trace-dir` entries. Defaults to the Frontier
-  `2-node` (~699 MB) and `32-node` (~33 GB) single-HPL runs on the shared filesystem.
-- `BENCH_COMBOS` — which `tool|format` pairs to run.
-- `BENCH_REPEATS` — timed repeats per combination (averaged; default 1).
-- `BENCH_SIF`, `BENCH_BASE_IMAGE` — container image locations.
-- `BENCH_OUTPUT_ROOT`, `BENCH_RESULTS_DIR` — scratch and results directories.
-- `BENCH_SLURM_ACCOUNT`, `BENCH_SLURM_PARTITION`, `BENCH_SLURM_TIME` — SLURM settings.
 
 ## Methodology
 
-Every conversion runs inside `container/fastotf2-bench.sif` on **one exclusive node** so
-timings are comparable and uncontended. Wall-clock time is measured around each converter
-invocation; output goes to scratch and is deleted between runs. Chapel is given all node
-cores (`CHPL_RT_NUM_THREADS_PER_LOCALE`) — its data-parallel advantage — while Python and C
-run single-threaded, as shipped. Raw per-run data lands in `results/results.csv`.
+Each conversion runs inside the bench `.sif` as its **own exclusive single-node SLURM job**,
+so jobs run in parallel on separate nodes with clean, uncontended timings. Wall-clock time is
+measured around each converter invocation; output goes to that job's `scratch/<tag>` and is
+deleted afterwards. Chapel is given all node cores (`CHPL_RT_NUM_THREADS_PER_LOCALE`) — its
+data-parallel advantage — while Python and C run single-threaded, as shipped. Per-job data
+lands in `out/run_<timestamp>/timings/<tag>.csv` and is merged into `results.csv` (columns:
+`run_tag, trace, tool, format, repeat, seconds, output_bytes, status`). Graphs are drawn with
+**plotnine** (log10 axis for conversion time; y-from-0 bars for speedup over Python).
 
 ## Converter output schema
 

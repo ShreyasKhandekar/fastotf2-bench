@@ -6,8 +6,11 @@
 container/*.sif
 container/*.tar
 
-# Generated benchmark logs (keep results tables/chart trackable)
-results/logs/
+# Per-run artifacts that are large or host-specific.
+# Kept (trackable): out/<run>/{config.json, run.sbatch, results.csv, job_id.txt, plots/}
+out/**/scratch/
+out/**/slurm_logs/
+out/**/run_logs/
 
 # Python caches
 __pycache__/

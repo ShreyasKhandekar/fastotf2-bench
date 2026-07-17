@@ -9,15 +9,24 @@
 #
 # Idempotent: pass --force to rebuild even if the .sif already exists.
 #
-# Config (paths, base image, sif location) comes from ../bench.config.sh and can
-# be overridden via environment variables.
+# All parameters are environment variables (no config file). Override any of:
+#   BENCH_SIF         output .sif path      (default: <repo>/container/fastotf2-bench.sif)
+#   BENCH_IMAGE_TAG   podman image tag      (default: localhost/fastotf2-bench:latest)
+#   BENCH_BASE_IMAGE  base fastotf2 image   (default: portable single-locale converter)
+#
+# Example (build a second image without touching the default one):
+#   BENCH_SIF=container/fastotf2-bench-next.sif \
+#   BENCH_IMAGE_TAG=localhost/fastotf2-bench:next \
+#     bash container/build-bench-image.sh --force
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=/dev/null
-source "${REPO_DIR}/bench.config.sh"
+
+BENCH_SIF="${BENCH_SIF:-${REPO_DIR}/container/fastotf2-bench.sif}"
+BENCH_IMAGE_TAG="${BENCH_IMAGE_TAG:-localhost/fastotf2-bench:latest}"
+BENCH_BASE_IMAGE="${BENCH_BASE_IMAGE:-ghcr.io/hpc-ai-adv-dev/fastotf2/fastotf2-converter:latest}"
 
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
