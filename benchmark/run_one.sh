@@ -15,7 +15,7 @@
 #   BENCH_SIF          Apptainer .sif to run
 #   BENCH_TRACE_DIR    directory holding the OTF2 anchor
 #   BENCH_TRACE_LABEL  label for this trace (e.g. "11.6GiB"; no spaces)
-#   BENCH_TOOL         chapel | python | c
+#   BENCH_TOOL         fastotf2 | python | c   ("chapel" accepted as an alias)
 #   BENCH_FORMAT       CSV | PARQUET
 #   BENCH_OUTPUT_DIR   scratch dir for this conversion's output (created; deleted after)
 #   BENCH_RESULT_FILE  one-row CSV written here
@@ -46,7 +46,7 @@ rm -rf "${BENCH_OUTPUT_DIR}"; mkdir -p "${BENCH_OUTPUT_DIR}" "$(dirname "${BENCH
 anchor="/data/${BENCH_TRACE_ANCHOR}"
 bind=(--bind "${BENCH_TRACE_DIR}:/data:ro" --bind "${BENCH_OUTPUT_DIR}:/out")
 case "${BENCH_TOOL}" in
-    chapel) cmd=(apptainer run "${bind[@]}" "${BENCH_SIF}"
+    fastotf2|chapel) cmd=(apptainer run "${bind[@]}" "${BENCH_SIF}"
                  "${anchor}" --format="${BENCH_FORMAT}" --outputDir=/out --log=ERROR) ;;
     python) cmd=(apptainer exec "${bind[@]}" "${BENCH_SIF}"
                  python3 "${BENCH_IN_PYTHON}" "${anchor}" --format "${BENCH_FORMAT}" --outputDir /out) ;;
