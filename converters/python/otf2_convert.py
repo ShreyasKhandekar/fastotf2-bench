@@ -10,25 +10,93 @@ Emits, per the FastOTF2Converter schema:
   <outputDir>/<Group>_metrics.<ext>
     columns: Group, Metric Name, Time, Value
 
-CSV  -> times in seconds (float).
-Parquet -> times in nanoseconds (int64), matching the Chapel converter.
+CSV     -> times in seconds (float).
+Parquet -> times in nanoseconds (int64).
 
-Events are streamed and written in batches so memory stays bounded even on very
-large traces.
+PARALLELISM (restored from the original convert.py): the trace is read with one
+task PER LOCATION on a thread pool, each task opening its OWN reader and reading
+only that location's events; then the per-location results are written out on the
+same pool (one task per output file). This is the same read-parallel / write-parallel
+model the original converter used -- the intervening single-threaded rewrite was a
+regression. Parquet output is the only additive feature (the original was CSV-only).
 
 Usage:
   otf2_convert.py <trace.otf2> [--format CSV|PARQUET] [--outputDir DIR]
-                  [--keep-dups] [--read-only]
+                  [--keep-dups] [--jobs N]
 """
 import argparse
 import os
+import threading
 import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import otf2
 
 
-FLUSH_ROWS = 100_000  # rows buffered per output file before a Parquet flush
-PROGRESS_EVERY = 2_000_000  # print a progress heartbeat every N events processed
+# ---------------------------------------------------------------------------
+# Call-graph model (ported from the original convert.py; the conversion subset).
+# ---------------------------------------------------------------------------
+class Interval(NamedTuple):
+    start: float
+    end: Optional[float] = None
+    depth: float = 0
+    name: Optional[str] = None
+
+    def has_overlap(self, other: "Interval") -> bool:
+        my_end = self.end if self.end is not None else float("inf")
+        other_end = other.end if other.end is not None else float("inf")
+        return self.start < other_end and other.start < my_end
+
+    def clip(self, start: float, end: float) -> "Interval":
+        new_start = max(self.start, start)
+        new_end = min(self.end, end) if self.end is not None else end
+        return self._replace(start=new_start, end=new_end)
+
+
+class CallGraph:
+    """A per-location timeline of enter/leave intervals (like the original)."""
+
+    def __init__(self):
+        self.finished_intervals: List[Interval] = []
+        self.live_intervals: List[Interval] = []
+
+    def enter(self, start: float, name: Optional[str] = None) -> None:
+        depth = len(self.live_intervals) + 1
+        self.live_intervals.append(Interval(start=start, depth=depth, name=name))
+
+    def leave(self, end: float) -> None:
+        if not self.live_intervals:
+            raise ValueError("No active intervals to leave.")
+        interval = self.live_intervals.pop()
+        self.finished_intervals.append(interval._replace(end=end))
+
+    def get_intervals_between(self, start: float, end: float) -> List[Interval]:
+        if start > end:
+            raise ValueError("Start time must be less than or equal to end time.")
+        window = Interval(start, end)
+        overlapping = (
+            iv for iv in (self.finished_intervals + self.live_intervals)
+            if iv.has_overlap(window)
+        )
+        clipped = (iv.clip(start, end) for iv in overlapping)
+        return sorted(
+            clipped, key=lambda x: (x.start, x.end if x.end is not None else float("inf"))
+        )
+
+
+# ---------------------------------------------------------------------------
+# Time base (module globals, as in the original: set once, read by worker threads).
+# ---------------------------------------------------------------------------
+start_time: Optional[int] = None      # ticks of the ProgramBegin event
+timer_resolution: Optional[int] = None  # ticks per second
+
+
+def timestamp_to_seconds(timestamp: Optional[int]) -> float:
+    if timestamp is None or start_time is None or timer_resolution is None:
+        return 0.0
+    return (timestamp - start_time) / timer_resolution
 
 
 def sanitize(name: str) -> str:
@@ -36,205 +104,200 @@ def sanitize(name: str) -> str:
     return name.replace(" ", "_")
 
 
-def elapsed_str(seconds: float) -> str:
-    """Format seconds as e.g. '1h23m45s' for progress heartbeats."""
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h:
-        return f"{h}h{m:02d}m{s:02d}s"
-    if m:
-        return f"{m}m{s:02d}s"
-    return f"{s}s"
+# Duplicate (group, name) locations are disambiguated by handing out successive
+# indices, exactly as the original converter did.
+MATCHES: Dict[Tuple[str, str], int] = {}
+MATCH_LOCK = threading.Lock()
 
 
-class CsvWriter:
-    """Streaming CSV writer for one output file."""
+# ---------------------------------------------------------------------------
+# Per-location read task: opens its OWN reader and reads only this location's
+# events, building a CallGraph and a dedup'd per-metric sample list.
+# ---------------------------------------------------------------------------
+def process_location(location, trace_path: str, dedup: bool):
+    call_graph = CallGraph()
+    local_metrics: Dict[str, List[Tuple[float, Any]]] = {}
 
-    def __init__(self, path: str, header: str):
-        self._f = open(path, "w")
-        self._f.write(header + "\n")
+    with otf2.reader.open(trace_path) as reader:
+        matches = [
+            loc for loc in reader.definitions.locations
+            if loc.name == location.name and loc.group.name == location.group.name
+        ]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            with MATCH_LOCK:
+                key = (location.group.name, location.name)
+                idx = MATCHES.get(key, 0)
+                MATCHES[key] = idx + 1
+            selected = matches[min(idx, len(matches) - 1)]
+        else:
+            selected = matches[0]
 
-    def write_callgraph(self, thread, group, depth, name, start, end, duration):
-        # Quote the region name; it may contain commas.
-        self._f.write(
-            f'{thread},{group},{depth},"{name}",{start:.9f},{end:.9f},{duration:.9f}\n'
-        )
+        for _, event in reader.events([selected]):
+            current_time = timestamp_to_seconds(event.time)
+            if isinstance(event, otf2.events.Metric):
+                metric_name = event.member.name
+                bucket = local_metrics.setdefault(metric_name, [])
+                if (not dedup) or (not bucket) or (bucket[-1][1] != event.value):
+                    bucket.append((current_time, event.value))
+            elif isinstance(event, otf2.events.Enter):
+                call_graph.enter(current_time, name=event.region.name)
+            elif isinstance(event, otf2.events.Leave):
+                try:
+                    call_graph.leave(current_time)
+                except ValueError:
+                    continue
 
-    def write_metric(self, group, metric_name, t, value):
-        self._f.write(f'{group},"{metric_name}",{t:.9f},{value}\n')
-
-    def close(self):
-        self._f.close()
-
-
-class ParquetWriter:
-    """Batched Parquet writer for one output file (bounded memory)."""
-
-    def __init__(self, path: str, schema):
-        import pyarrow.parquet as pq
-
-        self._pq = pq
-        self._schema = schema
-        self._writer = pq.ParquetWriter(path, schema, compression="snappy")
-        self._cols = [[] for _ in schema.names]
-        self._n = 0
-
-    def _append(self, *values):
-        for i, v in enumerate(values):
-            self._cols[i].append(v)
-        self._n += 1
-        if self._n >= FLUSH_ROWS:
-            self._flush()
-
-    def _flush(self):
-        if self._n == 0:
-            return
-        import pyarrow as pa
-
-        batch = pa.record_batch(
-            [pa.array(col, type=self._schema.field(i).type) for i, col in enumerate(self._cols)],
-            schema=self._schema,
-        )
-        self._writer.write_batch(batch)
-        self._cols = [[] for _ in self._schema.names]
-        self._n = 0
-
-    def close(self):
-        self._flush()
-        self._writer.close()
+    return (location.group.name, location.name, call_graph, local_metrics)
 
 
-def _build_parquet_schemas():
+# ---------------------------------------------------------------------------
+# Writers -- CSV (as in the original) and Parquet (additive). Each writes ONE
+# output file in a single pass (no streaming/batching).
+# ---------------------------------------------------------------------------
+def _to_nanos(seconds: float) -> int:
+    return int(round(seconds * 1e9))
+
+
+def callgraph_to_csv(call_graph: CallGraph, group: str, thread: str, filename: str) -> None:
+    with open(filename, "w") as f:
+        f.write("Thread,Group,Depth,Name,Start Time,End Time,Duration\n")
+        for interval in call_graph.get_intervals_between(float("-inf"), float("inf")):
+            start = interval.start
+            end = interval.end if interval.end is not None else float("inf")
+            duration = end - start
+            name = interval.name if interval.name else "Unknown"
+            depth = interval.depth if interval.depth else 0
+            f.write(f'{thread},{group},{depth},"{name}",{start},{end},{duration}\n')
+
+
+def metrics_to_csv(group: str, thread_metrics: Dict[str, List[Tuple[float, Any]]],
+                   filename: str) -> None:
+    with open(filename, "w") as f:
+        f.write("Group,Metric Name,Time,Value\n")
+        for metric_name, values in thread_metrics.items():
+            for t, value in values:
+                f.write(f"{group},{metric_name},{t},{value}\n")
+
+
+def callgraph_to_parquet(call_graph: CallGraph, group: str, thread: str, filename: str) -> None:
     import pyarrow as pa
+    import pyarrow.parquet as pq
 
-    callgraph = pa.schema([
-        ("Thread", pa.string()),
-        ("Group", pa.string()),
-        ("Depth", pa.int32()),
-        ("Name", pa.string()),
-        ("Start Time", pa.int64()),
-        ("End Time", pa.int64()),
-        ("Duration", pa.int64()),
-    ])
-    metrics = pa.schema([
-        ("Group", pa.string()),
-        ("Metric Name", pa.string()),
-        ("Time", pa.int64()),
-        ("Value", pa.float64()),
-    ])
-    return callgraph, metrics
+    threads, groups, depths, names, starts, ends, durations = [], [], [], [], [], [], []
+    for interval in call_graph.get_intervals_between(float("-inf"), float("inf")):
+        start = interval.start
+        end = interval.end if interval.end is not None else start
+        name = interval.name if interval.name else "Unknown"
+        depth = int(interval.depth) if interval.depth else 0
+        s_ns, e_ns = _to_nanos(start), _to_nanos(end)
+        threads.append(thread); groups.append(group); depths.append(depth)
+        names.append(name); starts.append(s_ns); ends.append(e_ns)
+        durations.append(e_ns - s_ns)
+
+    table = pa.table(
+        {
+            "Thread": pa.array(threads, pa.string()),
+            "Group": pa.array(groups, pa.string()),
+            "Depth": pa.array(depths, pa.int32()),
+            "Name": pa.array(names, pa.string()),
+            "Start Time": pa.array(starts, pa.int64()),
+            "End Time": pa.array(ends, pa.int64()),
+            "Duration": pa.array(durations, pa.int64()),
+        }
+    )
+    pq.write_table(table, filename, compression="snappy")
 
 
-def convert(trace_path: str, output_dir: str, fmt: str, dedup: bool, read_only: bool):
+def metrics_to_parquet(group: str, thread_metrics: Dict[str, List[Tuple[float, Any]]],
+                       filename: str) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    groups, names, times, values = [], [], [], []
+    for metric_name, samples in thread_metrics.items():
+        for t, value in samples:
+            groups.append(group); names.append(metric_name)
+            times.append(_to_nanos(t)); values.append(float(value))
+
+    table = pa.table(
+        {
+            "Group": pa.array(groups, pa.string()),
+            "Metric Name": pa.array(names, pa.string()),
+            "Time": pa.array(times, pa.int64()),
+            "Value": pa.array(values, pa.float64()),
+        }
+    )
+    pq.write_table(table, filename, compression="snappy")
+
+
+# ---------------------------------------------------------------------------
+# Driver: parallel per-location read, then parallel per-file write.
+# ---------------------------------------------------------------------------
+def convert(trace_path: str, output_dir: str, fmt: str, dedup: bool, jobs: int):
+    global start_time, timer_resolution
+
     fmt = fmt.upper()
     parquet = fmt == "PARQUET"
-    if not read_only:
-        os.makedirs(output_dir, exist_ok=True)
+    ext = "parquet" if parquet else "csv"
+    os.makedirs(output_dir, exist_ok=True)
 
-    if parquet:
-        cg_schema, met_schema = _build_parquet_schemas()
+    print(f"Converting trace at {trace_path} to {fmt} using {jobs} workers...", flush=True)
+    baseline = time.time()
 
-    callgraph_writers = {}   # (group, thread) -> writer
-    metric_writers = {}       # group -> writer
-    stacks = {}               # location id -> list of (start_ticks, region_name, depth)
-    last_metric = {}          # (group, metric_name) -> last value (dedup)
+    call_graphs: Dict[str, Dict[str, CallGraph]] = {}
+    metrics: Dict[str, Dict[str, List[Tuple[float, Any]]]] = {}
 
-    t0 = time.time()
-    with otf2.reader.open(trace_path) as trace:
-        clock = trace.definitions.clock_properties
-        resolution = float(clock.timer_resolution)
-        offset = clock.global_offset
+    pool = ThreadPoolExecutor(max_workers=jobs)
 
-        def to_seconds(ticks):
-            return (ticks - offset) / resolution if resolution else 0.0
+    # --- Discover locations + establish the time base from one reader. ---
+    with otf2.reader.open(trace_path) as reader:
+        timer_resolution = reader.timer_resolution
+        for _, event in reader.events:
+            if isinstance(event, otf2.events.ProgramBegin):
+                start_time = event.time
+                break
+        locations = sorted(
+            reader.definitions.locations, key=lambda loc: (loc.group.name, loc.name)
+        )
 
-        def to_nanos(ticks):
-            return int(round((ticks - offset) * 1e9 / resolution)) if resolution else 0
+    # --- Parallel READ: one task per location, each with its own reader. ---
+    futures = [pool.submit(process_location, loc, trace_path, dedup) for loc in locations]
+    for future in as_completed(futures):
+        result = future.result()
+        if not isinstance(result, tuple):
+            continue
+        group, thread, call_graph, local_metrics = result
+        call_graphs.setdefault(group, {})[thread] = call_graph
+        group_metrics = metrics.setdefault(group, {})
+        for metric_name, values in local_metrics.items():
+            group_metrics.setdefault(metric_name, []).extend(values)
 
-        t_open = time.time()
-        print(f"Opened trace in {t_open - t0:.2f} s", flush=True)
+    print(f"Reading completed in {time.time() - baseline:.2f} seconds.", flush=True)
+    write_start = time.time()
 
-        n_events = 0
-        t_last_progress = t_open
-        for location, event in trace.events:
-            n_events += 1
-            if n_events % PROGRESS_EVERY == 0:
-                now = time.time()
-                rate = PROGRESS_EVERY / (now - t_last_progress) if now > t_last_progress else 0.0
-                print(
-                    f"  ... {n_events:,} events processed "
-                    f"({elapsed_str(now - t0)} elapsed, {rate:,.0f} events/s, "
-                    f"{len(callgraph_writers)} callgraph files open)",
-                    flush=True,
-                )
-                t_last_progress = now
+    # --- Parallel WRITE: one task per callgraph file and one per metrics file. ---
+    write_callgraph = callgraph_to_parquet if parquet else callgraph_to_csv
+    write_metrics = metrics_to_parquet if parquet else metrics_to_csv
 
-            loc_id = location._ref if hasattr(location, "_ref") else id(location)
-            thread = sanitize(location.name)
-            group = location.group.name if getattr(location, "group", None) else "Unknown"
+    futures = []
+    for group, threads in call_graphs.items():
+        for thread, call_graph in threads.items():
+            filename = os.path.join(output_dir, f"{group}_{sanitize(thread)}_callgraph.{ext}")
+            futures.append(pool.submit(write_callgraph, call_graph, group, thread, filename))
+    for group, thread_metrics in metrics.items():
+        filename = os.path.join(output_dir, f"{group}_metrics.{ext}")
+        futures.append(pool.submit(write_metrics, group, thread_metrics, filename))
+    for future in as_completed(futures):
+        future.result()
 
-            if isinstance(event, otf2.events.Enter):
-                stk = stacks.setdefault(loc_id, [])
-                stk.append((event.time, event.region.name, len(stk)))
+    pool.shutdown(wait=True)
 
-            elif isinstance(event, otf2.events.Leave):
-                stk = stacks.get(loc_id)
-                if not stk:
-                    continue
-                start_ticks, region_name, depth = stk.pop()
-                if read_only:
-                    continue
-                key = (group, thread)
-                w = callgraph_writers.get(key)
-                if w is None:
-                    fname = os.path.join(output_dir, f"{group}_{thread}_callgraph")
-                    if parquet:
-                        w = ParquetWriter(fname + ".parquet", cg_schema)
-                    else:
-                        w = CsvWriter(fname + ".csv",
-                                      "Thread,Group,Depth,Name,Start Time,End Time,Duration")
-                    callgraph_writers[key] = w
-                if parquet:
-                    s = to_nanos(start_ticks); e = to_nanos(event.time)
-                    w._append(thread, group, depth, region_name, s, e, e - s)
-                else:
-                    s = to_seconds(start_ticks); e = to_seconds(event.time)
-                    w.write_callgraph(thread, group, depth, region_name, s, e, e - s)
-
-            elif isinstance(event, otf2.events.Metric):
-                member = getattr(event, "member", None)
-                if member is None:
-                    continue
-                metric_name = member.name
-                value = event.value
-                if dedup:
-                    dk = (group, metric_name)
-                    if last_metric.get(dk) == value:
-                        continue
-                    last_metric[dk] = value
-                if read_only:
-                    continue
-                w = metric_writers.get(group)
-                if w is None:
-                    fname = os.path.join(output_dir, f"{group}_metrics")
-                    if parquet:
-                        w = ParquetWriter(fname + ".parquet", met_schema)
-                    else:
-                        w = CsvWriter(fname + ".csv", "Group,Metric Name,Time,Value")
-                    metric_writers[group] = w
-                if parquet:
-                    w._append(group, metric_name, to_nanos(event.time), float(value))
-                else:
-                    w.write_metric(group, metric_name, to_seconds(event.time), value)
-
-    for w in callgraph_writers.values():
-        w.close()
-    for w in metric_writers.values():
-        w.close()
-
-    elapsed = time.time() - t0
-    action = "Read" if read_only else f"{fmt} conversion"
-    print(f"{action} completed in {elapsed:.3f} seconds ({n_events:,} events).", flush=True)
+    print(f"Writing completed in {time.time() - write_start:.2f} seconds.", flush=True)
+    total = time.time() - baseline
+    print(f"{fmt} conversion completed in {total:.3f} seconds ({total / 60:.2f} minutes).",
+          flush=True)
 
 
 def main():
@@ -245,8 +308,8 @@ def main():
     p.add_argument("--outputDir", default="./", help="Directory for output files")
     p.add_argument("--keep-dups", action="store_true",
                    help="Do not skip consecutive duplicate metric values")
-    p.add_argument("--read-only", action="store_true",
-                   help="Read/parse the trace but write no output")
+    p.add_argument("--jobs", type=int, default=64,
+                   help="Number of worker threads for reading/writing (default: 64)")
     args = p.parse_args()
 
     convert(
@@ -254,7 +317,7 @@ def main():
         output_dir=args.outputDir,
         fmt=args.format,
         dedup=not args.keep_dups,
-        read_only=args.read_only,
+        jobs=max(1, args.jobs),
     )
 
 

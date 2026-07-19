@@ -13,7 +13,7 @@ times every converter, and renders a comparison table + chart.
 | Tool | CSV | Parquet | How it runs |
 |------|-----|---------|-------------|
 | **Chapel** (`fastotf2`) | ✓ | ✓ | the upstream converter, using all node cores |
-| **Python** (`otf2` + `pyarrow`) | ✓ | ✓ | pure-Python reader, single-threaded |
+| **Python** (`otf2` + `pyarrow`) | ✓ | ✓ | pure-Python reader, thread-parallel per location |
 | **C** (OTF2 C library) | ✓ | — | `fprintf` CSV writer, single-threaded |
 
 C emits CSV only: Parquet output in C requires the Apache Arrow C++/GLib toolchain, which
@@ -89,7 +89,9 @@ Each conversion runs inside the bench `.sif` as its **own exclusive single-node 
 so jobs run in parallel on separate nodes with clean, uncontended timings. Wall-clock time is
 measured around each converter invocation; output goes to that job's `scratch/<tag>` and is
 deleted afterwards. Chapel is given all node cores (`CHPL_RT_NUM_THREADS_PER_LOCALE`) — its
-data-parallel advantage — while Python and C run single-threaded, as shipped. Per-job data
+data-parallel advantage. Python is also parallel: a thread pool reads each location with its
+own reader and writes each output file concurrently (`--jobs`, 64 by default). C runs
+single-threaded, as shipped. Per-job data
 lands in `out/run_<timestamp>/timings/<tag>.csv` and is merged into `results.csv` (columns:
 `run_tag, trace, tool, format, repeat, seconds, output_bytes, status`). Graphs are drawn with
 **plotnine** (log10 axis for conversion time; y-from-0 bars for speedup over Python).
