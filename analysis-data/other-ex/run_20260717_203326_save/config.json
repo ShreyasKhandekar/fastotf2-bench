@@ -1,0 +1,57 @@
+{
+  "run_tag": "run_20260717_203326",
+  "system": "other-ex",
+  "image": "/lus/bnchlu1/khandeka/dev/hpc-ai-adv-dev/fastotf2-bench/container/fastotf2-bench-next.sif",
+  "base_image": "ghcr.io/hpc-ai-adv-dev/fastotf2/fastotf2-converter:latest",
+  "trace_anchor": "traces.otf2",
+  "traces_to_include": [
+    2,
+    4,
+    8,
+    16,
+    32
+  ],
+  "traces": {
+    "2": {
+      "label": "s2_0.7GiB",
+      "gib": 0.682,
+      "path": "/lus/bnchlu1/adt/otf2-traces/frontier/frontier-2-node-single-HPL-run"
+    },
+    "4": {
+      "label": "s4_1.9GiB",
+      "gib": 1.899,
+      "path": "/lus/bnchlu1/adt/otf2-traces/frontier/frontier-4-node-single-HPL-run"
+    },
+    "8": {
+      "label": "s8_5.5GiB",
+      "gib": 5.544,
+      "path": "/lus/bnchlu1/adt/otf2-traces/frontier/frontier-8-node-single-HPL-run"
+    },
+    "16": {
+      "label": "s16_11.6GiB",
+      "gib": 11.563,
+      "path": "/lus/bnchlu1/adt/otf2-traces/frontier/frontier-16-node-single-HPL-run"
+    },
+    "32": {
+      "label": "s32_32.7GiB",
+      "gib": 32.669,
+      "path": "/lus/bnchlu1/adt/otf2-traces/frontier/frontier-32-node-single-HPL-run"
+    }
+  },
+  "combos": [
+    "fastotf2|CSV",
+    "fastotf2|PARQUET",
+    "c|CSV",
+    "python|CSV",
+    "python|PARQUET"
+  ],
+  "repeats": 1,
+  "chpl_threads": 0,
+  "slurm": {
+    "account": "<redacted>",
+    "partition": "",
+    "time": "12:00:00",
+    "exclusive": true,
+    "extra_args": []
+  }
+}
