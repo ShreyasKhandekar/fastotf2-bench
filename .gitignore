@@ -8,11 +8,20 @@
 container/*.sif
 container/*.tar
 
-# Per-run artifacts that are large or host-specific.
-# Kept (trackable): out/<run>/{config.json, run.sbatch, results.csv, job_id.txt, plots/}
-out/**/scratch/
-out/**/slurm_logs/
-out/**/run_logs/
+# Per-run artifacts (large and/or host-specific) -- out/ is fully ignored. The small, curated
+# subset needed to RE-RUN the analysis lives in the tracked analysis-data/ folder instead (see
+# analysis-data/README.md); nothing needs to be picked out of out/ directly any more.
+out/
+
+# analysis-data/ IS tracked, but defensively ignore anything bulky/sensitive that should never
+# land there even by accident (belt-and-suspenders; out/ above already blocks the source).
+analysis-data/**/pq/
+analysis-data/**/*.sif
+analysis-data/**/*_logs/
+analysis-data/**/slurm_logs/
+analysis-data/**/run_logs/
+analysis-data/**/*.pid
+analysis-data/**/scratch/
 
 # Python caches
 __pycache__/
