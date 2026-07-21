@@ -14,8 +14,8 @@ analysis-data/
     <run>/results.csv, trace_sizes.json, config.json (sanitized), plots/, SOURCES.md
 ```
 
-`<system>` is a neutral label (never the real cluster name). A Frontier upload adds a sibling
-`frontier/` with the same shape.
+`<system>` is a neutral label (never the real cluster name). Today: `other-ex` and `frontier`
+(each a sibling with the same shape), so analyses can compare systems.
 
 ## Re-run the analysis from here
 
@@ -52,7 +52,10 @@ and is not used by any build/run script. `_save`'s numbers match the restored ca
 ## Replicating on Frontier
 
 1. Run the benchmark as usual (outputs land in ignored `out/`).
-2. Edit `SRC_RUN` + `SYSTEM = "frontier"` at the top of `tools/build_bench_analysis_data.py`, run
-   it → writes `analysis-data/frontier/<run>/` with a **sanitized** `config.json`.
+2. Build the sanitized subset with the run + system as args (no need to edit the file):
+   `python tools/build_bench_analysis_data.py --src-run out/<run> --system frontier`
+   → writes `analysis-data/frontier/<run>/` with a **sanitized** `config.json`. (The
+   `DEFAULT_SRC_RUN`/`DEFAULT_SYSTEM` constants still reproduce the original `other-ex` upload
+   when run with no args.)
 3. `git status` + eyeball the staged `config.json` (confirm `account`/mail show `<redacted>`),
    check size, commit.

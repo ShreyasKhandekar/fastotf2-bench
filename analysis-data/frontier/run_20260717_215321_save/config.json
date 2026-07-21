@@ -1,0 +1,61 @@
+{
+  "run_tag": "run_20260717_215321",
+  "system": "frontier",
+  "image": "/lustre/orion/csc688/scratch/shreyask/fastotf2-bench/container/fastotf2-bench-next.sif",
+  "base_image": "ghcr.io/hpc-ai-adv-dev/fastotf2/fastotf2-converter:latest",
+  "trace_anchor": "traces.otf2",
+  "traces_to_include": [
+    2,
+    4,
+    8,
+    16,
+    32
+  ],
+  "traces": {
+    "2": {
+      "label": "s2_0.7GiB",
+      "gib": 0.682,
+      "path": "/lustre/orion/csc688/world-shared/scorep-amd/runs/scratch/4098287/frontier-2-node-single-HPL-run"
+    },
+    "4": {
+      "label": "s4_1.9GiB",
+      "gib": 1.899,
+      "path": "/lustre/orion/csc688/world-shared/scorep-amd/runs/scratch/4098294/frontier-4-node-single-HPL-run"
+    },
+    "8": {
+      "label": "s8_5.5GiB",
+      "gib": 5.544,
+      "path": "/lustre/orion/csc688/world-shared/scorep-amd/runs/scratch/4098296/frontier-8-node-single-HPL-run"
+    },
+    "16": {
+      "label": "s16_11.6GiB",
+      "gib": 11.564,
+      "path": "/lustre/orion/csc688/world-shared/scorep-amd/runs/frontier-16-node-single-HPL-run/results"
+    },
+    "32": {
+      "label": "s32_32.7GiB",
+      "gib": 32.67,
+      "path": "/lustre/orion/csc688/world-shared/scorep-amd/runs/frontier-32-node-single-HPL-run/results"
+    }
+  },
+  "combos": [
+    "fastotf2|CSV",
+    "fastotf2|PARQUET",
+    "c|CSV",
+    "python|CSV",
+    "python|PARQUET"
+  ],
+  "repeats": 1,
+  "chpl_threads": 56,
+  "slurm": {
+    "account": "<redacted>",
+    "partition": "",
+    "time": "2:00:00",
+    "exclusive": true,
+    "extra_args": [
+      "<redacted>",
+      "--mail-type=BEGIN,END,FAIL",
+      "<redacted>"
+    ]
+  }
+}

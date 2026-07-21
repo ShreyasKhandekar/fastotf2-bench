@@ -15,19 +15,22 @@ redacts sensitive KEYS (account/mail/user/secret/token/password) and sensitive V
 (`--account=`/`--mail-user=` style flags and anything that looks like an email), so the uploaded
 config is safe regardless of which system produced it. On this system it's effectively a no-op.
 
-Re-run on another system by editing SRC_RUN / SYSTEM below (e.g. SYSTEM="frontier").
+Point it at any run/system without editing the file:
+    python build_bench_analysis_data.py --src-run out/run_20260717_215321_save --system frontier
+The defaults reproduce the original other-ex upload, so plain `python build_bench_analysis_data.py`
+still rebuilds that one. (Editing the DEFAULT_* constants below also works.)
 """
+import argparse
 import json
 import re
 import shutil
 import sys
 from pathlib import Path
 
-# ---- Configure (edit when replicating on another system) ----
+# ---- Defaults (override with --src-run / --system; edit here to change the default target) ----
 REPO = Path(__file__).resolve().parents[2]        # fastotf2-bench/
-SRC_RUN = REPO / "out" / "run_20260717_203326_save"
-SYSTEM = "other-ex"                               # neutral label; "frontier" on Frontier
-OUT = REPO / "analysis-data" / SYSTEM / SRC_RUN.name
+DEFAULT_SRC_RUN = REPO / "out" / "run_20260717_203326_save"
+DEFAULT_SYSTEM = "other-ex"                        # neutral label; "frontier" on Frontier
 
 # Redact KEYS whose name looks secret, and VALUES that look like account/mail flags or emails.
 _SENS_KEY = re.compile(r"(account|mail|secret|token|password|passwd)", re.I)
@@ -48,6 +51,18 @@ def sanitize_json(obj):
 
 
 def main():
+    ap = argparse.ArgumentParser(
+        description="Build the fastotf2-benchmark analysis-data subset (sanitized).")
+    ap.add_argument("--src-run", type=Path, default=DEFAULT_SRC_RUN,
+                    help="source run folder under out/ (absolute, or relative to the repo root)")
+    ap.add_argument("--system", default=DEFAULT_SYSTEM,
+                    help="neutral system label for analysis-data/<system>/ (e.g. other-ex, frontier)")
+    args = ap.parse_args()
+
+    SRC_RUN = args.src_run if args.src_run.is_absolute() else (REPO / args.src_run)
+    SYSTEM = args.system
+    OUT = REPO / "analysis-data" / SYSTEM / SRC_RUN.name
+
     if not SRC_RUN.is_dir():
         sys.exit(f"ERROR: source run not found: {SRC_RUN}")
     OUT.mkdir(parents=True, exist_ok=True)

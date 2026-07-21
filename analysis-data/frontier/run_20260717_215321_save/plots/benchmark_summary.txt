@@ -1,0 +1,20 @@
+FastOTF2 converter benchmark (run_20260717_215321) — single-node conversions
+
+Conversion time in seconds (mean over repeats), by size on disk:
+
+              fastotf2 (CSV)  fastotf2 (PARQUET)  C (CSV)  Python (CSV)  Python (PARQUET)
+size on disk                                                                             
+0.7 GiB                11.76                7.81    25.10        275.92            284.40
+1.9 GiB                17.23               11.35    72.15        769.28            793.78
+5.5 GiB                31.23               22.28   216.29       2245.63           2348.36
+11.6 GiB               59.90               45.70   527.95       4720.48           4811.95
+32.7 GiB              112.78               80.90  2001.08           NaN               NaN
+
+Speedup over Python (x faster):
+
+comparison  C (CSV)  fastotf2 (CSV)  fastotf2 (PARQUET)
+trace                                                  
+0.7 GiB        11.0            23.5                36.4
+1.9 GiB        10.7            44.7                70.0
+5.5 GiB        10.4            71.9               105.4
+11.6 GiB        8.9            78.8               105.3
