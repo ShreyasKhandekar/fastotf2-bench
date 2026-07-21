@@ -40,12 +40,14 @@ account/mail are set.
 Also dropped entirely (bulky and/or sensitive, unused by analysis): `slurm_logs/`, `run_logs/`,
 `scratch/`, `manifest.csv`.
 
-## Code-provenance caveat (tracked TODO)
+## Code-provenance note (RESOLVED 2026-07-21)
 
-This run's **python** numbers are from the **serial** python converter, later replaced in the repo
-by a "parallel" version that is GIL-bound (not actually parallel). Restore the serial version as
-the canonical python representer; `_save` corresponds to that serial code, not what's currently in
-the repo.
+This run's **python** numbers are from the **serial** python converter. It had briefly been
+replaced in the repo by a "parallel" version that turned out to be GIL-bound (not actually
+parallel) -- **fixed**: the serial version is now restored as the canonical
+`converters/python/otf2_convert.py` (shipped in every new container image); the incorrect
+GIL-bound attempt is kept for reference only as `converters/python/otf2_convert_parallel_incorrect.py`
+and is not used by any build/run script. `_save`'s numbers match the restored canonical code.
 
 ## Replicating on Frontier
 

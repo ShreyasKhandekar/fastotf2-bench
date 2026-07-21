@@ -13,11 +13,18 @@ times every converter, and renders a comparison table + chart.
 | Tool | CSV | Parquet | How it runs |
 |------|-----|---------|-------------|
 | **Chapel** (`fastotf2`) | ✓ | ✓ | the upstream converter, using all node cores |
-| **Python** (`otf2` + `pyarrow`) | ✓ | ✓ | pure-Python reader, thread-parallel per location |
+| **Python** (`otf2` + `pyarrow`) | ✓ | ✓ | pure-Python reader, single-threaded |
 | **C** (OTF2 C library) | ✓ | — | `fprintf` CSV writer, single-threaded |
 
 C emits CSV only: Parquet output in C requires the Apache Arrow C++/GLib toolchain, which
 is a heavy dependency and out of scope for the baseline. The table shows **N/A** there.
+
+> A "parallel" Python variant (`converters/python/otf2_convert_parallel_incorrect.py`) was
+> tried and is kept for reference, but it is **not actually parallel**: the pure-Python `otf2`
+> reader is CPU-bound Python bytecode, and CPython's GIL serializes bytecode execution across
+> threads, so it got thread-scheduling overhead with no real speedup. It is not used by any
+> build or run script -- `converters/python/otf2_convert.py` (single-threaded, streaming) is
+> the canonical baseline shipped in every image.
 
 ## Design: one portable container
 
@@ -89,9 +96,10 @@ Each conversion runs inside the bench `.sif` as its **own exclusive single-node 
 so jobs run in parallel on separate nodes with clean, uncontended timings. Wall-clock time is
 measured around each converter invocation; output goes to that job's `scratch/<tag>` and is
 deleted afterwards. Chapel is given all node cores (`CHPL_RT_NUM_THREADS_PER_LOCALE`) — its
-data-parallel advantage. Python is also parallel: a thread pool reads each location with its
-own reader and writes each output file concurrently (`--jobs`, 64 by default). C runs
-single-threaded, as shipped. Per-job data
+data-parallel advantage. Python and C run single-threaded, as shipped
+(`converters/python/otf2_convert.py` is the canonical, single-threaded baseline; a GIL-bound
+"parallel" variant exists only for reference, see `converters/python/otf2_convert_parallel_incorrect.py`,
+and is not used by any build/run script). Per-job data
 lands in `out/run_<timestamp>/timings/<tag>.csv` and is merged into `results.csv` (columns:
 `run_tag, trace, tool, format, repeat, seconds, output_bytes, status`). Graphs are drawn with
 **plotnine** (log10 axis for conversion time; y-from-0 bars for speedup over Python).

@@ -37,6 +37,9 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages \
 # Install the converter assets under /opt/bench.
 WORKDIR /opt/bench
 COPY converters/c/otf2csv.c converters/c/Makefile /opt/bench/c/
+# otf2_convert.py is the CANONICAL, single-threaded Python baseline (restored 2026-07-21).
+# A GIL-bound "parallel" variant exists at converters/python/otf2_convert_parallel_incorrect.py
+# for reference ONLY -- it is NOT actually parallel (CPython's GIL) and is never copied here.
 COPY converters/python/otf2_convert.py /opt/bench/otf2_convert.py
 
 # Compile the C converter against the base image's OTF2 install.
